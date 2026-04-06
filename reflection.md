@@ -1,5 +1,7 @@
 # Reflection: Sleeping Barber Problem — Elixir vs Go
 - Sarathy Selvam (PID: 730770538)
+- Lakshin Ganesha (PID: 730757493)
+- Sushant Potu (PID: 730768373)
 ## 1. Process Identity: PIDs vs Channels
 
 In Elixir, every concurrent entity is a **process with a unique PID**. The barber, waiting room, and each customer are all spawned via `spawn/1`, and their PIDs serve as their addresses. When a customer arrives, it passes `self()` as part of the message (`{:arrive, self(), id, arrival_time}`), and the waiting room stores that PID to later send replies directly back to the customer. Identity and communication address are the same thing — knowing a process's PID is both knowing *who* it is and *how to reach it*.
