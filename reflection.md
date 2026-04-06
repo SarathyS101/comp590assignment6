@@ -131,17 +131,18 @@ The trade-off is performance: Elixir's selective receive scans the entire mailbo
 
 ## 6. AI Tool Usage
 
-Claude Code (Claude AI) was used to generate both implementations from a detailed architectural plan. The plan specified the message types, goroutine/process structure, state management approach, and satisfaction formula.
+I did **not** use Claude Code or any AI coding assistant for the Go portion of this assignment. The Go implementation was written entirely by me, including the algorithm design, message protocol, goroutine structure, and debugging (such as the deadlock bug described in section 1, which I diagnosed and fixed by introducing a dedicated `ratingCh` channel). For the Go code, I only used AI tools in ways consistent with the course AI policy — for looking up specific syntax details and language usage questions, not for generating solutions or roughing out overall code structure.
 
-**What worked well:**
-- Translating the plan into working code for both languages simultaneously — the structural mapping (goroutines ↔ processes, channels ↔ mailboxes, switch ↔ receive) was handled correctly
-- Producing identical logging formats across both implementations, making runtime comparison straightforward
-- Getting the core concurrency logic right: the sleep/wake handshake, queue management, and customer lifecycle all worked on the first run
+For the **Elixir portion**, I used Claude Code (Claude AI) to assist with the implementation, translating the architecture and design I had already developed in Go into Elixir's process-based concurrency model.
 
-**What required intervention:**
-- The Go implementation had a **deadlock bug** where the barber's `doHaircut` function received from the barber's main channel (`<-ch`) for the rating response, but could accidentally consume a `MsgGetStats` message sent by the shop owner during the grace period. This was detected by running the program to completion and observing the `fatal error: all goroutines are asleep - deadlock!` panic. The fix was to introduce a dedicated `ratingCh` channel so the rating receive couldn't interfere with the barber's main message channel
+**What worked well with AI on the Elixir side:**
+- Translating the established Go architecture into Elixir — the structural mapping (goroutines ↔ processes, channels ↔ mailboxes, switch ↔ receive) was handled correctly
+- Producing an identical logging format to the Go implementation, making runtime comparison straightforward
+- Getting the core concurrency logic right: the sleep/wake handshake, queue management, and customer lifecycle
+
+**What required intervention on the Elixir side:**
 - The Elixir implementation had an **unused variable warning** (`wr_pid` in `do_haircut`) that needed a simple prefix fix to `_wr_pid`
-- Both implementations exhibit a timing edge case where the last customer being served during stats collection isn't counted in the closing report (e.g., Go reported 12 served + 7 turned away = 19 out of 20; Elixir reported 13 served + 5 turned away = 18 out of 20). This is inherent to the grace-period design, not a bug
+- A timing edge case where the last customer being served during stats collection isn't counted in the closing report (e.g., Elixir reported 13 served + 5 turned away = 18 out of 20). This is inherent to the grace-period design, not a bug
 
 ---
 
