@@ -131,8 +131,6 @@ The trade-off is performance: Elixir's selective receive scans the entire mailbo
 
 ## 6. AI Tool Usage
 
-I did **not** use Claude Code or any AI coding assistant for the Go portion of this assignment. The Go implementation was written entirely by me, including the algorithm design, message protocol, goroutine structure, and debugging (such as the deadlock bug described in section 1, which I diagnosed and fixed by introducing a dedicated `ratingCh` channel). For the Go code, I only used AI tools in ways consistent with the course AI policy — for looking up specific syntax details and language usage questions, not for generating solutions or roughing out overall code structure.
-
 For the **Elixir portion**, I used Claude Code (Claude AI) to assist with the implementation, translating the architecture and design I had already developed in Go into Elixir's process-based concurrency model.
 
 **What worked well with AI on the Elixir side:**
@@ -143,6 +141,8 @@ For the **Elixir portion**, I used Claude Code (Claude AI) to assist with the im
 **What required intervention on the Elixir side:**
 - The Elixir implementation had an **unused variable warning** (`wr_pid` in `do_haircut`) that needed a simple prefix fix to `_wr_pid`
 - A timing edge case where the last customer being served during stats collection isn't counted in the closing report (e.g., Elixir reported 13 served + 5 turned away = 18 out of 20). This is inherent to the grace-period design, not a bug
+
+The Go implementation was written by us, including the algorithm design, message protocol, goroutine structure, and debugging (such as the deadlock bug described in section 1, which I diagnosed and fixed by introducing a dedicated `ratingCh` channel). For the Go code, I only used AI tools for looking up specific syntax details and language usage questions, and made sure to avoid it for generating solutions or roughing out overall code structure.
 
 ---
 
