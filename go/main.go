@@ -125,7 +125,7 @@ func waitingRoom(arriveCh chan Message, nextCustomerCh chan Message, statsCh cha
 			}
 
 		case msg := <-nextCustomerCh:
-			// msg.From contains the barber's channel reference (per rubric requirement)
+			// msg.From needs to have the barber's channel reference
 			_ = msg.From
 			if len(queue) > 0 {
 				front := queue[0]
@@ -154,7 +154,7 @@ func waitingRoom(arriveCh chan Message, nextCustomerCh chan Message, statsCh cha
 	}
 }
 
-// ── Barber ───────────────────────────────────────────────────────────────────
+// Barber
 
 func barber(wakeupCh chan Message, customerReadyCh chan Message, noneWaitingCh chan struct{}, statsCh chan Message, shutdownCh chan struct{}, nextCustomerCh chan Message, cfg Config) {
 	served := 0
@@ -208,7 +208,7 @@ func barber(wakeupCh chan Message, customerReadyCh chan Message, noneWaitingCh c
 
 	for {
 		if isSleeping {
-			// Sleep state: wait for wakeup, stats, or shutdown
+			// Sleep state, it waits for wakeup, stats, or shutdown
 			select {
 			case msg := <-wakeupCh:
 				logEvent("Barber", fmt.Sprintf("Woken up by Customer %d", msg.CustomerID))
@@ -221,10 +221,10 @@ func barber(wakeupCh chan Message, customerReadyCh chan Message, noneWaitingCh c
 				return
 			}
 		} else {
-			// Awake state: ask waiting room for next customer
+			// Awake state, it asks waiting room for next customer
 			nextCustomerCh <- Message{Kind: MsgNextCustomer, From: statsCh}
 
-			// Now wait for the response or other messages
+			// wait for the response or other messages
 			select {
 			case msg := <-customerReadyCh:
 				doHaircut(msg.From, msg.CustomerID, msg.ArrivalMs)
@@ -241,7 +241,7 @@ func barber(wakeupCh chan Message, customerReadyCh chan Message, noneWaitingCh c
 	}
 }
 
-// ── Customer ────────────────────────────────────────────────────────────────
+// Customer
 
 func customer(id int, wrArriveCh chan Message, cfg Config, doneCh chan struct{}) {
 	defer func() { doneCh <- struct{}{} }()
@@ -264,7 +264,7 @@ func customer(id int, wrArriveCh chan Message, cfg Config, doneCh chan struct{})
 		return
 	}
 
-	// Admitted — wait for rate request
+	// Admitted , wait for rate request
 	rateReq := <-replyCh
 	if rateReq.Kind == MsgRateRequest {
 		waitSec := float64(time.Since(startTime).Milliseconds()-arrivalMs) / 1000.0
@@ -280,7 +280,7 @@ func customer(id int, wrArriveCh chan Message, cfg Config, doneCh chan struct{})
 	}
 }
 
-// ── Shop Owner (main) ───────────────────────────────────────────────────────
+// Shop Owner (main)
 
 func main() {
 	cfg := defaultConfig()
@@ -303,7 +303,6 @@ func main() {
 	go waitingRoom(wrArriveCh, wrNextCustomerCh, wrStatsCh, wrShutdownCh, barberWakeupCh, barberCustomerReadyCh, barberNoneWaitingCh, cfg)
 	go barber(barberWakeupCh, barberCustomerReadyCh, barberNoneWaitingCh, barberStatsCh, barberShutdownCh, wrNextCustomerCh, cfg)
 
-	// Use a done channel instead of sync.WaitGroup
 	doneCh := make(chan struct{}, cfg.TotalCustomers)
 
 	for i := 1; i <= cfg.TotalCustomers; i++ {
@@ -315,7 +314,7 @@ func main() {
 
 	logEvent("Shop", fmt.Sprintf("All %d customers sent. Waiting for all to finish...", cfg.TotalCustomers))
 
-	// Wait for all customers to complete (replaces sync.WaitGroup)
+	// Wait for all customers to complete 
 	for i := 0; i < cfg.TotalCustomers; i++ {
 		<-doneCh
 	}
