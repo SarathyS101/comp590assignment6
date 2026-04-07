@@ -6,9 +6,9 @@
 
 In Elixir, every concurrent entity is a **process with a unique PID**. The barber, waiting room, and each customer are all spawned via `spawn/1`, and their PIDs serve as their addresses. When a customer arrives, it passes `self()` as part of the message (`{:arrive, self(), id, arrival_time}`), and the waiting room stores that PID to later send replies directly back to the customer. Identity and communication address are the same thing — knowing a process's PID is both knowing *who* it is and *how to reach it*.
 
-In Go, goroutines are **anonymous** — they have no built-in identity or address. Instead, identity is expressed through **channels**. Each customer creates its own buffered reply channel (`replyCh := make(chan Message, 1)`) and passes it inside the `Message` struct's `From` field. The waiting room stores this channel in a `QueueEntry` so it can later send `MsgAdmitted`, `MsgTurnedAway`, or forward the channel to the barber for the rating handshake. The barber similarly uses a dedicated `ratingCh` to receive ratings without conflicting with its main message channel.
+In Go, goroutines are **anonymous** — they have no built-in identity or address. Instead, identity is expressed through **channels**. Each customer creates its own buffered reply channel (`replyCh := make(chan Message, 1)`) and passes it inside the `Message` struct's `From` field. The waiting room stores this channel in a `QueueEntry` so it can later send `MsgAdmitted`, `MsgTurnedAway`, or forward the channel to the barber for the rating handshake. The barber similarly uses a dedicated `ratingCh` to receive ratings without conflicting with its other incoming channels. The barber and waiting room each have **multiple dedicated channels** (e.g., `wakeupCh`, `customerReadyCh`, `shutdownCh` for the barber; `arriveCh`, `nextCustomerCh`, `shutdownCh` for the waiting room), and use `select` to multiplex across them.
 
-This difference had a concrete impact during development: Go required careful reasoning about which channel to read from at each point (the barber's main channel vs. the dedicated rating channel), and an early bug caused a deadlock when the barber's `doHaircut` function read a `MsgGetStats` message from its main channel instead of the expected `MsgRating`. In Elixir, selective `receive` with pattern matching (`{:rating, ^customer_id, score}`) naturally ignores irrelevant messages in the mailbox, making this class of bug impossible.
+This difference had a concrete impact during development: Go required careful reasoning about channel topology — which goroutine owns which channel, and ensuring that messages are routed to the correct dedicated channel. An early version used a single channel per goroutine, which caused a deadlock when the barber's `doHaircut` function read a `MsgGetStats` message instead of the expected `MsgRating`. Splitting into dedicated channels resolved this. In Elixir, selective `receive` with pattern matching (`{:rating, ^customer_id, score}`) naturally ignores irrelevant messages in the mailbox, making this class of bug impossible.
 
 ## 2. State Management: Recursive Parameters vs Local Variables
 
@@ -33,7 +33,7 @@ end
 
 The `do_haircut` function returns a tuple `{new_served, new_total_dur, new_total_rating}` rather than mutating anything. State transitions between the barber's two modes (`main_loop` ↔ `sleep_loop`) carry all state in the function call, making each state transition explicit. The waiting room similarly threads `queue`, `turned_away`, and `barber_sleeping` through every recursive `loop` call.
 
-The Elixir approach makes state transitions visible in the code structure — you can see exactly what state is carried into each mode. The Go approach is more concise but makes it less obvious which variables are live across state transitions, since the `goto` labels share the same scope.
+The Elixir approach makes state transitions visible in the code structure — you can see exactly what state is carried into each mode. The Go approach is more concise but makes it less obvious which variables are live across state transitions, since both branches of the `if isSleeping` check share the same scope.
 
 ## 3. The Sleeping Barber Handshake
 
@@ -102,20 +102,28 @@ The trade-off: Go's approach is more explicit and refactoring-friendly (rename a
 
 ## 5. Select vs Receive
 
-Go's channel-based approach uses **`<-ch` in a `for` loop** with a `switch` on the message kind. The barber reads from a single channel and dispatches:
+Go's channel-based approach uses **`select`** across multiple dedicated channels. The barber has separate channels for wakeups, customer-ready notifications, none-waiting signals, stats requests, and shutdown. A boolean `isSleeping` controls which `select` block runs:
 
 ```go
 for {
-    msg := <-ch
-    switch msg.Kind {
-    case MsgWakeup: ...
-    case MsgGetStats: ...
-    case MsgShutdown: ...
+    if isSleeping {
+        select {
+        case msg := <-wakeupCh: ...
+        case msg := <-statsCh: ...
+        case <-shutdownCh: ...
+        }
+    } else {
+        select {
+        case msg := <-customerReadyCh: ...
+        case <-noneWaitingCh: ...
+        case msg := <-statsCh: ...
+        case <-shutdownCh: ...
+        }
     }
 }
 ```
 
-Go does have a `select` statement for reading from multiple channels, but in this implementation the barber uses a single channel for all incoming messages. The distinction between "main loop" and "sleep loop" is achieved via `goto` labels — both read from the same channel, but accept different message kinds. Messages that don't match any `case` in the `switch` are silently dropped, which caused the deadlock bug described in Question 1.
+The `select` statement blocks until one of the channels is ready, providing natural multiplexing. Each state (sleeping vs. awake) listens on a different set of channels, so the barber only receives messages appropriate to its current mode. This avoids the problem of misrouted messages — a wakeup can only arrive on `wakeupCh`, and a customer-ready notification only on `customerReadyCh`.
 
 Elixir's `receive` block is fundamentally different: it performs **selective receive** against the process mailbox. Only messages matching a pattern are consumed; non-matching messages remain in the mailbox for later:
 
@@ -127,21 +135,22 @@ end
 
 The `^customer_id` pin operator ensures only the rating from the specific customer being served is consumed. If a `{:get_stats, from_pid}` message arrives in the barber's mailbox during a haircut, it stays there untouched until the barber transitions to a state with a `receive` clause that matches it. This is why the Elixir implementation never had the channel-mixing deadlock — selective receive naturally queues unexpected messages.
 
-The trade-off is performance: Elixir's selective receive scans the entire mailbox for each `receive`, which can be O(n) for large mailboxes. Go's channel read is O(1) but requires the programmer to manually handle or route every message that arrives.
+The trade-off is performance: Elixir's selective receive scans the entire mailbox for each `receive`, which can be O(n) for large mailboxes. Go's `select` over dedicated channels is O(1) but requires the programmer to design the channel topology upfront and manually route every message to the correct channel.
 
 ## 6. AI Tool Usage
 
-I did **not** use Claude Code or any AI coding assistant for the Go portion of this assignment. The Go implementation was written entirely by me, including the algorithm design, message protocol, goroutine structure, and debugging (such as the deadlock bug described in section 1, which I diagnosed and fixed by introducing a dedicated `ratingCh` channel). For the Go code, I only used AI tools in ways consistent with the course AI policy — for looking up specific syntax details and language usage questions, not for generating solutions or roughing out overall code structure.
+I did **not** use Claude Code or any AI coding assistant for the Go portion of this assignment. The Go implementation was written entirely by me, including the algorithm design, message protocol, multi-channel `select` architecture, goroutine structure, and debugging (such as the deadlock bug described in section 1, which I diagnosed and fixed by introducing dedicated channels per message type). For the Go code, I only used AI tools in ways consistent with the course AI policy — for looking up specific syntax details and language usage questions, not for generating solutions or roughing out overall code structure.
 
 For the **Elixir portion**, I used Claude Code (Claude AI) to assist with the implementation, translating the architecture and design I had already developed in Go into Elixir's process-based concurrency model.
 
 **What worked well with AI on the Elixir side:**
-- Translating the established Go architecture into Elixir — the structural mapping (goroutines ↔ processes, channels ↔ mailboxes, switch ↔ receive) was handled correctly
+- Translating the established Go architecture into Elixir — the structural mapping (goroutines ↔ processes, channels ↔ mailboxes, select ↔ receive) was handled correctly
 - Producing an identical logging format to the Go implementation, making runtime comparison straightforward
 - Getting the core concurrency logic right: the sleep/wake handshake, queue management, and customer lifecycle
 
 **What required intervention on the Elixir side:**
 - The Elixir implementation had an **unused variable warning** (`wr_pid` in `do_haircut`) that needed a simple prefix fix to `_wr_pid`
+- The `next_customer` message needed to include `self()` (the barber's PID) as payload to match the message protocol specification: `{:next_customer, self()}` instead of just `{:next_customer}`
 - A timing edge case where the last customer being served during stats collection isn't counted in the closing report (e.g., Elixir reported 13 served + 5 turned away = 18 out of 20). This is inherent to the grace-period design, not a bug
 
 ---

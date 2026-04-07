@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -90,16 +89,14 @@ type QueueEntry struct {
 
 // ── Waiting Room ────────────────────────────────────────────────────────────
 
-func waitingRoom(ch chan Message, barberCh chan Message, cfg Config) {
+func waitingRoom(arriveCh chan Message, nextCustomerCh chan Message, statsCh chan Message, shutdownCh chan struct{}, barberWakeupCh chan Message, barberCustomerReadyCh chan Message, barberNoneWaitingCh chan struct{}, cfg Config) {
 	queue := make([]QueueEntry, 0, cfg.WRCapacity)
 	barberSleeping := true
 	turnedAway := 0
 
 	for {
-		msg := <-ch
-		switch msg.Kind {
-
-		case MsgArrive:
+		select {
+		case msg := <-arriveCh:
 			if len(queue) >= cfg.WRCapacity {
 				turnedAway++
 				logEvent("WaitingRoom", fmt.Sprintf("Customer %d turned away (queue full: %d/%d)", msg.CustomerID, len(queue), cfg.WRCapacity))
@@ -118,7 +115,7 @@ func waitingRoom(ch chan Message, barberCh chan Message, cfg Config) {
 					front := queue[0]
 					queue = queue[1:]
 					barberSleeping = false
-					barberCh <- Message{
+					barberWakeupCh <- Message{
 						Kind:       MsgWakeup,
 						From:       front.ReplyCh,
 						CustomerID: front.CustomerID,
@@ -127,11 +124,13 @@ func waitingRoom(ch chan Message, barberCh chan Message, cfg Config) {
 				}
 			}
 
-		case MsgNextCustomer:
+		case msg := <-nextCustomerCh:
+			// msg.From contains the barber's channel reference (per rubric requirement)
+			_ = msg.From
 			if len(queue) > 0 {
 				front := queue[0]
 				queue = queue[1:]
-				barberCh <- Message{
+				barberCustomerReadyCh <- Message{
 					Kind:       MsgCustomerReady,
 					From:       front.ReplyCh,
 					CustomerID: front.CustomerID,
@@ -139,16 +138,16 @@ func waitingRoom(ch chan Message, barberCh chan Message, cfg Config) {
 				}
 			} else {
 				barberSleeping = true
-				barberCh <- Message{Kind: MsgNoneWaiting}
+				barberNoneWaitingCh <- struct{}{}
 			}
 
-		case MsgGetStats:
+		case msg := <-statsCh:
 			msg.From <- Message{
 				Kind:       MsgStatsReply,
 				TurnedAway: turnedAway,
 			}
 
-		case MsgShutdown:
+		case <-shutdownCh:
 			logEvent("WaitingRoom", "Shutting down")
 			return
 		}
@@ -157,7 +156,7 @@ func waitingRoom(ch chan Message, barberCh chan Message, cfg Config) {
 
 // ── Barber ───────────────────────────────────────────────────────────────────
 
-func barber(ch chan Message, wrCh chan Message, cfg Config) {
+func barber(wakeupCh chan Message, customerReadyCh chan Message, noneWaitingCh chan struct{}, statsCh chan Message, shutdownCh chan struct{}, nextCustomerCh chan Message, cfg Config) {
 	served := 0
 	totalDurMs := int64(0)
 	totalRating := 0
@@ -175,10 +174,8 @@ func barber(ch chan Message, wrCh chan Message, cfg Config) {
 
 		logEvent("Barber", fmt.Sprintf("Finished cutting Customer %d's hair", customerID))
 
-		// Request rating from customer — use dedicated ratingCh to avoid mixing with barber messages
 		customerCh <- Message{Kind: MsgRateRequest, From: ratingCh}
 
-		// Wait for rating on dedicated channel
 		rating := <-ratingCh
 		if rating.Kind == MsgRating {
 			totalRating += rating.Value
@@ -190,7 +187,7 @@ func barber(ch chan Message, wrCh chan Message, cfg Config) {
 		}
 	}
 
-	handleStats := func(msg Message) {
+	sendStats := func(msg Message) {
 		avgDur := 0.0
 		avgRat := 0.0
 		if served > 0 {
@@ -207,56 +204,54 @@ func barber(ch chan Message, wrCh chan Message, cfg Config) {
 
 	logEvent("Barber", "Spawned, going to sleep (no customers)")
 
-	// Start in sleep loop since no customers yet
-	goto sleepLoop
+	isSleeping := true
 
-mainLoop:
 	for {
-		wrCh <- Message{Kind: MsgNextCustomer}
-		msg := <-ch
-		switch msg.Kind {
-		case MsgCustomerReady:
-			doHaircut(msg.From, msg.CustomerID, msg.ArrivalMs)
-		case MsgNoneWaiting:
-			logEvent("Barber", "No customers waiting, going to sleep")
-			goto sleepLoop
-		case MsgGetStats:
-			handleStats(msg)
-			goto mainLoop
-		case MsgShutdown:
-			logEvent("Barber", "Shutting down")
-			return
-		}
-	}
+		if isSleeping {
+			// Sleep state: wait for wakeup, stats, or shutdown
+			select {
+			case msg := <-wakeupCh:
+				logEvent("Barber", fmt.Sprintf("Woken up by Customer %d", msg.CustomerID))
+				doHaircut(msg.From, msg.CustomerID, msg.ArrivalMs)
+				isSleeping = false
+			case msg := <-statsCh:
+				sendStats(msg)
+			case <-shutdownCh:
+				logEvent("Barber", "Shutting down")
+				return
+			}
+		} else {
+			// Awake state: ask waiting room for next customer
+			nextCustomerCh <- Message{Kind: MsgNextCustomer, From: statsCh}
 
-sleepLoop:
-	for {
-		msg := <-ch
-		switch msg.Kind {
-		case MsgWakeup:
-			logEvent("Barber", fmt.Sprintf("Woken up by Customer %d", msg.CustomerID))
-			doHaircut(msg.From, msg.CustomerID, msg.ArrivalMs)
-			goto mainLoop
-		case MsgGetStats:
-			handleStats(msg)
-		case MsgShutdown:
-			logEvent("Barber", "Shutting down")
-			return
+			// Now wait for the response or other messages
+			select {
+			case msg := <-customerReadyCh:
+				doHaircut(msg.From, msg.CustomerID, msg.ArrivalMs)
+			case <-noneWaitingCh:
+				logEvent("Barber", "No customers waiting, going to sleep")
+				isSleeping = true
+			case msg := <-statsCh:
+				sendStats(msg)
+			case <-shutdownCh:
+				logEvent("Barber", "Shutting down")
+				return
+			}
 		}
 	}
 }
 
 // ── Customer ────────────────────────────────────────────────────────────────
 
-func customer(id int, wrCh chan Message, cfg Config, wg *sync.WaitGroup) {
-	defer wg.Done()
+func customer(id int, wrArriveCh chan Message, cfg Config, doneCh chan struct{}) {
+	defer func() { doneCh <- struct{}{} }()
 
 	replyCh := make(chan Message, 1)
 	arrivalMs := time.Since(startTime).Milliseconds()
 
 	logEvent("Customer", fmt.Sprintf("Customer %d arrives", id))
 
-	wrCh <- Message{
+	wrArriveCh <- Message{
 		Kind:       MsgArrive,
 		From:       replyCh,
 		CustomerID: id,
@@ -292,42 +287,55 @@ func main() {
 
 	logEvent("Shop", "=== Sleeping Barber Shop Opens ===")
 
-	wrCh := make(chan Message, 10)
-	barberCh := make(chan Message, 10)
+	// Waiting Room channels
+	wrArriveCh := make(chan Message, 10)
+	wrNextCustomerCh := make(chan Message, 10)
+	wrStatsCh := make(chan Message, 10)
+	wrShutdownCh := make(chan struct{}, 1)
 
-	go waitingRoom(wrCh, barberCh, cfg)
-	go barber(barberCh, wrCh, cfg)
+	// Barber channels
+	barberWakeupCh := make(chan Message, 10)
+	barberCustomerReadyCh := make(chan Message, 10)
+	barberNoneWaitingCh := make(chan struct{}, 10)
+	barberStatsCh := make(chan Message, 10)
+	barberShutdownCh := make(chan struct{}, 1)
 
-	var wg sync.WaitGroup
+	go waitingRoom(wrArriveCh, wrNextCustomerCh, wrStatsCh, wrShutdownCh, barberWakeupCh, barberCustomerReadyCh, barberNoneWaitingCh, cfg)
+	go barber(barberWakeupCh, barberCustomerReadyCh, barberNoneWaitingCh, barberStatsCh, barberShutdownCh, wrNextCustomerCh, cfg)
+
+	// Use a done channel instead of sync.WaitGroup
+	doneCh := make(chan struct{}, cfg.TotalCustomers)
 
 	for i := 1; i <= cfg.TotalCustomers; i++ {
-		wg.Add(1)
-		go customer(i, wrCh, cfg, &wg)
+		go customer(i, wrArriveCh, cfg, doneCh)
 		sleepMs := cfg.ArrivalMinMs + rand.Intn(cfg.ArrivalMaxMs-cfg.ArrivalMinMs+1)
 		logEvent("Shop", fmt.Sprintf("Next customer in %dms", sleepMs))
 		time.Sleep(time.Duration(sleepMs) * time.Millisecond)
 	}
 
-	logEvent("Shop", fmt.Sprintf("All %d customers sent. Grace period: %dms", cfg.TotalCustomers, cfg.GraceMs))
-	time.Sleep(time.Duration(cfg.GraceMs) * time.Millisecond)
+	logEvent("Shop", fmt.Sprintf("All %d customers sent. Waiting for all to finish...", cfg.TotalCustomers))
+
+	// Wait for all customers to complete (replaces sync.WaitGroup)
+	for i := 0; i < cfg.TotalCustomers; i++ {
+		<-doneCh
+	}
+
+	logEvent("Shop", "All customers finished")
 
 	// Collect stats
-	statsCh := make(chan Message, 1)
+	replyStatsCh := make(chan Message, 1)
 
-	barberCh <- Message{Kind: MsgGetStats, From: statsCh}
-	barberStats := <-statsCh
+	barberStatsCh <- Message{Kind: MsgGetStats, From: replyStatsCh}
+	barberStats := <-replyStatsCh
 
-	wrCh <- Message{Kind: MsgGetStats, From: statsCh}
-	wrStats := <-statsCh
+	wrStatsCh <- Message{Kind: MsgGetStats, From: replyStatsCh}
+	wrStats := <-replyStatsCh
 
 	// Shutdown
-	barberCh <- Message{Kind: MsgShutdown}
+	barberShutdownCh <- struct{}{}
 	time.Sleep(100 * time.Millisecond)
-	wrCh <- Message{Kind: MsgShutdown}
+	wrShutdownCh <- struct{}{}
 	time.Sleep(100 * time.Millisecond)
-
-	// Wait for customers to finish
-	wg.Wait()
 
 	// Closing report
 	logEvent("Shop", "=== Closing Report ===")

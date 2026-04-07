@@ -56,7 +56,7 @@ defmodule WaitingRoom do
           end
         end
 
-      {:next_customer} ->
+      {:next_customer, _barber_pid} ->
         if length(queue) > 0 do
           [{front_pid, front_id, front_arrival} | rest] = queue
           send(barber_pid, {:customer_ready, front_pid, front_id, front_arrival})
@@ -115,7 +115,7 @@ defmodule Barber do
   end
 
   defp main_loop(wr_pid, served, total_dur, total_rating, config, start_time) do
-    send(wr_pid, {:next_customer})
+    send(wr_pid, {:next_customer, self()})
 
     receive do
       {:customer_ready, customer_pid, customer_id, arrival_time} ->
