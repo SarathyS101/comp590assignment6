@@ -33,7 +33,9 @@ end
 
 The `do_haircut` function returns a tuple `{new_served, new_total_dur, new_total_rating}` rather than mutating anything. State transitions between the barber's two modes (`main_loop` ↔ `sleep_loop`) carry all state in the function call, making each state transition explicit. The waiting room similarly threads `queue`, `turned_away`, and `barber_sleeping` through every recursive `loop` call.
 
-The Elixir approach makes state transitions visible in the code structure — you can see exactly what state is carried into each mode. The Go approach is more concise but makes it less obvious which variables are live across state transitions, since both branches of the `if isSleeping` check share the same scope.
+The Elixir approach makes state transitions visible in the code structure, you can see exactly what state is carried into each mode. The Go approach is more concise but makes it less obvious which variables are live across state transitions, since both branches of the `if isSleeping` check share the same scope. Ultimately, Go's imperative mutation felt more natural for the Barber (which constantly updates variables like served, totalDurMs, and totalRating), whereas Elixir's recursive parameters felt like a cleaner fit for the Waiting Room, which simply flips a boolean flag and manages a queue list.
+
+
 
 ## 3. The Sleeping Barber Handshake
 
@@ -138,8 +140,6 @@ The `^customer_id` pin operator ensures only the rating from the specific custom
 The trade-off is performance: Elixir's selective receive scans the entire mailbox for each `receive`, which can be O(n) for large mailboxes. Go's `select` over dedicated channels is O(1) but requires the programmer to design the channel topology upfront and manually route every message to the correct channel.
 
 ## 6. AI Tool Usage
-
-I did **not** use Claude Code or any AI coding assistant for the Go portion of this assignment. The Go implementation was written entirely by me, including the algorithm design, message protocol, multi-channel `select` architecture, goroutine structure, and debugging (such as the deadlock bug described in section 1, which I diagnosed and fixed by introducing dedicated channels per message type). For the Go code, I only used AI tools in ways consistent with the course AI policy — for looking up specific syntax details and language usage questions, not for generating solutions or roughing out overall code structure.
 
 For the **Elixir portion**, I used Claude Code (Claude AI) to assist with the implementation, translating the architecture and design I had already developed in Go into Elixir's process-based concurrency model.
 
