@@ -4,15 +4,15 @@
 - Sushant Potu (PID: 730768373)
 ## 1. Process Identity: PIDs vs Channels
 
-In Elixir, every concurrent entity is a **process with a unique PID**. The barber, waiting room, and each customer are all spawned via `spawn/1`, and their PIDs serve as their addresses. When a customer arrives, it passes `self()` as part of the message (`{:arrive, self(), id, arrival_time}`), and the waiting room stores that PID to later send replies directly back to the customer. Identity and communication address are the same thing — knowing a process's PID is both knowing *who* it is and *how to reach it*.
+In Elixir, every concurrent entity is a process with a unique PID. The barber, waiting room, and each customer are all spawned via `spawn/1`, and their PIDs serve as their addresses. When a customer arrives, it passes `self()` as part of the message (`{:arrive, self(), id, arrival_time}`), and the waiting room stores that PID to later send replies directly back to the customer. Identity and communication address are the same thing, knowing a process's PID is both knowing *who* it is and *how to reach it*.
 
-In Go, goroutines are **anonymous** — they have no built-in identity or address. Instead, identity is expressed through **channels**. Each customer creates its own buffered reply channel (`replyCh := make(chan Message, 1)`) and passes it inside the `Message` struct's `From` field. The waiting room stores this channel in a `QueueEntry` so it can later send `MsgAdmitted`, `MsgTurnedAway`, or forward the channel to the barber for the rating handshake. The barber similarly uses a dedicated `ratingCh` to receive ratings without conflicting with its other incoming channels. The barber and waiting room each have **multiple dedicated channels** (e.g., `wakeupCh`, `customerReadyCh`, `shutdownCh` for the barber; `arriveCh`, `nextCustomerCh`, `shutdownCh` for the waiting room), and use `select` to multiplex across them.
+In Go, goroutines are anonymous so they have no built in identity or address. We instead see identities through channels. Each customer creates its own buffered reply channel (`replyCh := make(chan Message, 1)`) and passes it inside the `Message` struct's `From` field. The waiting room stores this channel in a `QueueEntry` so it can later send `MsgAdmitted`, `MsgTurnedAway`, or forward the channel to the barber for the rating handshake. The barber similarly uses `ratingCh` to receive ratings without conflicting with its other incoming channels. The barber and waiting room each have multiple dedicated channels (e.g., `wakeupCh`, `customerReadyCh`, `shutdownCh` for the barber; `arriveCh`, `nextCustomerCh`, `shutdownCh` for the waiting room), and use `select` to multiplex across them.
 
-This difference had a concrete impact during development: Go required careful reasoning about channel topology — which goroutine owns which channel, and ensuring that messages are routed to the correct dedicated channel. An early version used a single channel per goroutine, which caused a deadlock when the barber's `doHaircut` function read a `MsgGetStats` message instead of the expected `MsgRating`. Splitting into dedicated channels resolved this. In Elixir, selective `receive` with pattern matching (`{:rating, ^customer_id, score}`) naturally ignores irrelevant messages in the mailbox, making this class of bug impossible.
+This difference had a concrete impact during development: Go required careful reasoning about channel topology, which goroutine owns which channel, and ensuring that messages are routed to the correct dedicated channel. An early version used a single channel per goroutine, which caused a deadlock when the barber's `doHaircut` function read a `MsgGetStats` message instead of the expected `MsgRating`. Splitting into dedicated channels resolved this. In Elixir, selective `receive` with pattern matching (`{:rating, ^customer_id, score}`) naturally ignores irrelevant messages in the mailbox, making this type of bug impossible.
 
 ## 2. State Management: Recursive Parameters vs Local Variables
 
-In Go, the barber goroutine maintains state via **local variables** declared at the top of the function:
+In Go, the barber goroutine maintains state via local variables declared at the top of the function:
 
 ```go
 served := 0
@@ -22,7 +22,7 @@ totalRating := 0
 
 These variables are mutated in place by `doHaircut` (a closure that captures them) using `served++`, `totalRating += rating.Value`, etc. The waiting room similarly mutates its `queue` slice and `turnedAway` counter. This is straightforward imperative programming — state lives in mutable variables scoped to the goroutine.
 
-In Elixir, state is managed through **recursive function parameters**. The barber's `main_loop` carries `served`, `total_dur`, and `total_rating` as arguments, and each recursive call passes updated values:
+In Elixir, state is managed through recursive function parameters. The barber's `main_loop` carries `served`, `total_dur`, and `total_rating` as arguments, and each recursive call passes updated values:
 
 ```elixir
 defp main_loop(wr_pid, served, total_dur, total_rating, config, start_time) do
