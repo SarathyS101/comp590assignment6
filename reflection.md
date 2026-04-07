@@ -153,6 +153,8 @@ For the **Elixir portion**, I used Claude Code (Claude AI) to assist with the im
 - The `next_customer` message needed to include `self()` (the barber's PID) as payload to match the message protocol specification: `{:next_customer, self()}` instead of just `{:next_customer}`
 - A timing edge case where the last customer being served during stats collection isn't counted in the closing report (e.g., Elixir reported 13 served + 5 turned away = 18 out of 20). This is inherent to the grace-period design, not a bug
 
+The Go implementation was written by us, including the algorithm design, message protocol, goroutine structure, and debugging (such as the deadlock bug described in section 1, which I diagnosed and fixed by introducing a dedicated `ratingCh` channel). For the Go code, I only used AI tools for looking up specific syntax details and language usage questions, and made sure to avoid it for generating solutions or roughing out overall code structure.
+
 ---
 
 
